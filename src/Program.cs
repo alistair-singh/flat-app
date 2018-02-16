@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading;
@@ -36,7 +38,7 @@ public class Journal : IJournal
       writer.Seek(sizeof(long), SeekOrigin.Current);
       Formatter.Serialize(buffer, t);
       writer.Write(Previous);
-      var next = Stream.Position + buffer.Length;
+      var next = Stream.Position + buffer.Length + sizeof(long);
       writer.Seek(0, SeekOrigin.Begin);
       writer.Write(next);
       Previous = next;
@@ -45,7 +47,7 @@ public class Journal : IJournal
 
       Stream.Seek(0, SeekOrigin.End);
       await Stream.WriteAsync(buffer.GetBuffer(), 0, (int)buffer.Length);
-      return Previous;
+      return next;
     }
   }
 
@@ -59,7 +61,40 @@ public class Journal : IJournal
 
 public static class Program
 {
+  public static async Task<(double Time, T Result, Exception Exception)> TimeAsync<T>(Func<Task<T>> value) 
+  {
+    var stopWatch = new Stopwatch();
+    stopWatch.Start();
+    try {
+      var t = await value();
+      stopWatch.Stop();
+      return (stopWatch.Elapsed.TotalSeconds, t, null);
+    }
+    catch(Exception ex){
+      stopWatch.Stop();
+      return (stopWatch.Elapsed.TotalSeconds, default(T), ex);
+    }
+  }
+
   public static async Task Main(string[] args)
   {
+    // NoAlloc: Ellapsed 58.3498612, Memory 700000008
+    // PreAlloc: Ellapsed 0.0753199, Writes: 0, Size: 700000008
+    WriteLine("flat-app");
+    var journal = await Journal.Empty();
+    journal.Stream = new MemoryStream(new byte[700000000]);
+
+    var result = await TimeAsync(async ()=>
+    {
+      var i = 0;
+      for(; i < 1; i++) 
+      {
+        await journal.Write(i);
+      }
+      return i;
+    });
+
+    WriteLine($"Ellapsed {result.Time}, Writes: {result.Result}, Size: {journal.Stream.Length}, Ex: {result.Exception}");
+    ReadKey(true);
   }
 }
