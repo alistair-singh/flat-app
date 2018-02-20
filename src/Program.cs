@@ -17,7 +17,7 @@ public interface IJournal
 public class Journal : IJournal
 {
   private int RecordSize { get; set; } = 256;
-  public long Previous { get; set; } = 1;
+  public long Previous { get; set; } = 8;
   public Stream Stream { get; set; } = new MemoryStream();
   public BinaryFormatter Formatter { get; } = new BinaryFormatter();
 
@@ -51,10 +51,14 @@ public class Journal : IJournal
     }
   }
 
-  public static async Task<Journal> Empty()
+  public static async Task<Journal> Empty(Stream stream = null)
   {
     var journal = new Journal();
-    await journal.Stream.WriteAsync(BitConverter.GetBytes(0L), 0, sizeof(long));
+    if(stream != null) {
+      journal.Stream = stream;
+      journal.Stream.SetLength(journal.Previous);
+    }
+    await journal.Stream.WriteAsync(BitConverter.GetBytes(journal.Previous), 0, sizeof(long));
     return journal;
   }
 }
@@ -78,16 +82,19 @@ public static class Program
 
   public static async Task Main(string[] args)
   {
-    // NoAlloc: Ellapsed 58.3498612, Memory 700000008
-    // PreAlloc: Ellapsed 0.0753199, Writes: 0, Size: 700000008
+    // NoAlloc:  Ellapsed 5.8809285, Writes: 1000000, Size: 70000008, Ex:
+    //           Ellapsed 5.9026677, Writes: 1000000, Size: 70000008, Ex:
+    //           Ellapsed 5.7378225, Writes: 1000000, Size: 70000008, Ex:
+    // PreAlloc: Ellapsed 5.5682736, Writes: 1000000, Size: 70000008, Ex:
     WriteLine("flat-app");
-    var journal = await Journal.Empty();
-    journal.Stream = new MemoryStream(new byte[700000000]);
+    //var journal = await Journal.Empty();
+    //var journal = await Journal.Empty(new MemoryStream(new byte[80000008]));
+    var journal = await Journal.Empty(File.Open("data", FileMode.OpenOrCreate));
 
     var result = await TimeAsync(async ()=>
     {
       var i = 0;
-      for(; i < 1; i++) 
+      for(; i < 10; i++) 
       {
         await journal.Write(i);
       }
