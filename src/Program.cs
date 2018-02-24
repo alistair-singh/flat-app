@@ -7,65 +7,39 @@ using System.Runtime.Serialization.Formatters.Binary;
 using System.Threading;
 using System.Threading.Tasks;
 using static System.Console;
-
-public interface IJournal
+public static class JournalExtensions
 {
-  Task<T> Read<T>(long id);
-  Task<long> Write<T>(T t);
-}
-
-public struct Index 
-{
-  public long Previous { get; set; }
-  public long Next { get; set; }
-}
-
-public class Journal : IJournal
-{
-  private int RecordSize { get; set; } = 256;
-  public long Previous { get; set; } = 8;
-  public Stream Stream { get; set; } = new MemoryStream();
-  public BinaryFormatter Formatter { get; } = new BinaryFormatter();
-
-  public Task<T> Read<T>(long id)
+  public static async Task<(long Next, long Prev, byte [] Data)> ReadRecord(this Stream stream, CancellationToken tok = new CancellationToken())
   {
-    lock (this)
-    {
-      Stream.Seek(id, SeekOrigin.Begin);
-      return Task.FromResult((T)Formatter.Deserialize(Stream));
-    }
+    var startPosition = stream.Position;
+
+    var headerFooterBuffer = new byte[sizeof(long)];
+    var read = await stream.ReadAsync(headerFooterBuffer, 0, headerFooterBuffer.Length, tok);
+    if(read != headerFooterBuffer.Length) throw new Exception($"Corrupt header [length = {read}]");
+    var next = BitConverter.ToInt64(headerFooterBuffer, 0);
+
+    var length = (next - sizeof(long)*2) - startPosition;
+    var record = new byte[length];
+    read = await stream.ReadAsync(record, 0, record.Length, tok);
+    if(read != record.Length) throw new Exception($"Corrupt data [length = {read}]");
+
+    read = await stream.ReadAsync(headerFooterBuffer, 0, headerFooterBuffer.Length, tok);
+    var prev = BitConverter.ToInt64(headerFooterBuffer, 0);
+    if(read != headerFooterBuffer.Length) throw new Exception($"Corrupt footer [length = {read}]");
+    if(prev != startPosition) throw new Exception($"Corrupt record [next = {next}, prev = {prev}, record size = {record.Length}]");
+
+    return (Next: next, Prev: prev, Data: record);
   }
 
-  public async Task<long> Write<T>(T t)
+  public static async Task<(long Next, long Prev, long Size)> WriteRecord(this Stream stream, byte [] data, CancellationToken tok = new CancellationToken())
   {
-    using (var buffer = new MemoryStream(RecordSize + sizeof(long) * 2))
-    using (var writer = new BinaryWriter(buffer))
-    {
-      writer.Seek(sizeof(long), SeekOrigin.Current);
-      Formatter.Serialize(buffer, t);
-      writer.Write(Previous);
-      var next = Stream.Position + buffer.Length + sizeof(long);
-      writer.Seek(0, SeekOrigin.Begin);
-      writer.Write(next);
-      Previous = next;
-
-      RecordSize = Math.Max(RecordSize, (int)buffer.Length);
-
-      Stream.Seek(0, SeekOrigin.End);
-      await Stream.WriteAsync(buffer.GetBuffer(), 0, (int)buffer.Length);
-      return next;
-    }
-  }
-
-  public static async Task<Journal> Empty(Stream stream = null)
-  {
-    var journal = new Journal();
-    if(stream != null) {
-      journal.Stream = stream;
-      journal.Stream.SetLength(journal.Previous);
-    }
-    await journal.Stream.WriteAsync(BitConverter.GetBytes(journal.Previous), 0, sizeof(long));
-    return journal;
+    var prev = stream.Position;
+    var next = prev + data.Length + (sizeof(long)*2);
+    await stream.WriteAsync(BitConverter.GetBytes(next), 0, sizeof(long), tok);
+    await stream.WriteAsync(data, 0, data.Length, tok);
+    await stream.WriteAsync(BitConverter.GetBytes(prev), 0, sizeof(long), tok);
+    await stream.FlushAsync(tok);
+    return (next, prev, data.Length);
   }
 }
 
@@ -93,21 +67,22 @@ public static class Program
     //           Ellapsed 5.7378225, Writes: 1000000, Size: 70000008, Ex:
     // PreAlloc: Ellapsed 5.5682736, Writes: 1000000, Size: 70000008, Ex:
     WriteLine("flat-app");
-    //var journal = await Journal.Empty();
-    //var journal = await Journal.Empty(new MemoryStream(new byte[80000008]));
-    var journal = await Journal.Empty(File.Open("data", FileMode.OpenOrCreate));
-
-    var result = await TimeAsync(async ()=>
+    using (var stream = File.Open("data", FileMode.OpenOrCreate))
     {
-      var i = 0;
-      for(; i < 10; i++) 
+      var result = await TimeAsync(async () =>
       {
-        await journal.Write(i);
-      }
-      return i;
-    });
+        var i = 0;
+        for (; i < 10; i++)
+        {
+          var h = await stream.WriteRecord(BitConverter.GetBytes((long)i));
+          
+          WriteLine($"Next: {h.Next}, Prev: {h.Prev}, Size: {h.Size}");
+        }
+        return i;
+      });
 
-    WriteLine($"Ellapsed {result.Time}, Writes: {result.Result}, Size: {journal.Stream.Length}, Ex: {result.Exception}");
+      WriteLine($"Ellapsed {result.Time}, Writes: {result.Result}, Size: {stream.Length}, Ex: {result.Exception}");
+    }
     ReadLine();
   }
 }
