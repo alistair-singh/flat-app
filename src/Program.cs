@@ -14,6 +14,12 @@ public interface IJournal
   Task<long> Write<T>(T t);
 }
 
+public struct Index 
+{
+  public long Previous { get; set; }
+  public long Next { get; set; }
+}
+
 public class Journal : IJournal
 {
   private int RecordSize { get; set; } = 256;
@@ -102,6 +108,6 @@ public static class Program
     });
 
     WriteLine($"Ellapsed {result.Time}, Writes: {result.Result}, Size: {journal.Stream.Length}, Ex: {result.Exception}");
-    ReadKey(true);
+    ReadLine();
   }
 }
